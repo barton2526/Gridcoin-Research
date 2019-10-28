@@ -20,8 +20,6 @@
 #include "contract/contract.h"
 #include "util.h"
 #include "neuralnet/project.h"
-#include "neuralnet/superblock.h"
-#include "neuralnet/cpid.h"
 
 #include <iostream>
 #include <boost/algorithm/string/case_conv.hpp> // for to_lower()
@@ -31,8 +29,6 @@
 
 #include <univalue.h>
 
-extern CCriticalSection cs_ConvergedScraperStatsCache;
-extern ConvergedScraperStats ConvergedScraperStatsCache;
 
 bool TallyResearchAverages_v9(CBlockIndex* index);
 using namespace std;
@@ -49,15 +45,16 @@ extern UniValue MagnitudeReport(std::string cpid);
 bool StrLessThanReferenceHash(std::string rh);
 extern std::string ExtractValue(std::string data, std::string delimiter, int pos);
 extern UniValue SuperblockReport(int lookback = 14, bool displaycontract = false, std::string cpid = "");
+MiningCPID GetBoincBlockByIndex(CBlockIndex* pblockindex);
 extern double GetSuperblockMagnitudeByCPID(std::string data, std::string cpid);
 std::string GetQuorumHash(const std::string& data);
+double GetOutstandingAmountOwed(StructCPID &mag, std::string cpid, int64_t locktime, double& total_owed, double block_magnitude);
 bool LoadAdminMessages(bool bFullTableScan,std::string& out_errors);
 int64_t GetMaximumBoincSubsidy(int64_t nTime);
 double GRCMagnitudeUnit(int64_t locktime);
 std::string ExtractXML(const std::string& XMLdata, const std::string& key, const std::string& key_end);
 std::string NeuralRequest(std::string MyNeuralRequest);
 extern bool AdvertiseBeacon(std::string &sOutPrivKey, std::string &sOutPubKey, std::string &sError, std::string &sMessage);
-extern bool ScraperSynchronizeDPOR();
 
 double Round(double d, int place);
 extern double GetSuperblockAvgMag(std::string data,double& out_beacon_count,double& out_participant_count,double& out_average, bool bIgnoreBeacons,int nHeight);
@@ -84,6 +81,8 @@ double GetTotalBalance();
 
 double CoinToDouble(double surrogate);
 extern void TxToJSON(const CTransaction& tx, const uint256 hashBlock, UniValue& entry);
+double LederstrumpfMagnitude2(double mag,int64_t locktime);
+bool IsCPIDValidv2(MiningCPID& mc, int height);
 
 BlockFinder RPCBlockFinder;
 
@@ -144,75 +143,19 @@ double GetBlockDifficulty(unsigned int nBits)
     return dDiff;
 }
 
-namespace {
-UniValue ClaimToJson(const NN::Claim& claim)
-{
-    UniValue json(UniValue::VOBJ);
-
-    json.pushKV("version", (int)claim.m_version);
-    json.pushKV("mining_id", claim.m_mining_id.ToString());
-    json.pushKV("client_version", claim.m_client_version);
-    json.pushKV("organization", claim.m_organization);
-
-    json.pushKV("block_subsidy", claim.m_block_subsidy);
-
-    json.pushKV("research_subsidy", claim.m_research_subsidy);
-    json.pushKV("magnitude", claim.m_magnitude);
-    json.pushKV("magnitude_unit", claim.m_magnitude_unit);
-
-    json.pushKV("signature", EncodeBase64(claim.m_signature.data(), claim.m_signature.size()));
-
-    json.pushKV("quorum_hash", claim.m_quorum_hash.ToString());
-    json.pushKV("quorum_address", claim.m_quorum_address);
-
-    return json;
-}
-
-UniValue SuperblockToJson(const NN::Superblock& superblock)
-{
-    UniValue magnitudes(UniValue::VOBJ);
-
-    for (const auto& cpid_pair : superblock.m_cpids) {
-        magnitudes.pushKV(cpid_pair.first.ToString(), cpid_pair.second);
-    }
-
-    UniValue projects(UniValue::VOBJ);
-
-    for (const auto& project_pair : superblock.m_projects) {
-        UniValue project(UniValue::VOBJ);
-
-        project.pushKV("average_rac", project_pair.second.m_average_rac);
-        project.pushKV("rac", project_pair.second.m_rac);
-        project.pushKV("total_credit", project_pair.second.m_total_credit);
-
-        projects.pushKV(project_pair.first, project);
-    }
-
-    UniValue json(UniValue::VOBJ);
-
-    json.pushKV("version", (int)superblock.m_version);
-    json.pushKV("magnitudes", std::move(magnitudes));
-    json.pushKV("projects", std::move(projects));
-
-    return json;
-}
-} // anonymous namespace
-
 UniValue blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPrintTransactionDetail)
 {
     UniValue result(UniValue::VOBJ);
-
     result.pushKV("hash", block.GetHash().GetHex());
-
     CMerkleTx txGen(block.vtx[0]);
     txGen.SetMerkleBranch(&block);
-
     result.pushKV("confirmations", txGen.GetDepthInMainChain());
     result.pushKV("size", (int)::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION));
     result.pushKV("height", blockindex->nHeight);
     result.pushKV("version", block.nVersion);
     result.pushKV("merkleroot", block.hashMerkleRoot.GetHex());
-    result.pushKV("mint", CoinToDouble(blockindex->nMint));
+    double mint = CoinToDouble(blockindex->nMint);
+    result.pushKV("mint", mint);
     result.pushKV("MoneySupply", blockindex->nMoneySupply);
     result.pushKV("time", block.GetBlockTime());
     result.pushKV("nonce", (uint64_t)block.nNonce);
@@ -220,30 +163,22 @@ UniValue blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fP
     result.pushKV("difficulty", GetDifficulty(blockindex));
     result.pushKV("blocktrust", leftTrim(blockindex->GetBlockTrust().GetHex(), '0'));
     result.pushKV("chaintrust", leftTrim(blockindex->nChainTrust.GetHex(), '0'));
-
     if (blockindex->pprev)
         result.pushKV("previousblockhash", blockindex->pprev->GetBlockHash().GetHex());
     if (blockindex->pnext)
         result.pushKV("nextblockhash", blockindex->pnext->GetBlockHash().GetHex());
-
-    const NN::Claim& claim = block.GetClaim();
-
+    MiningCPID bb = DeserializeBoincBlock(block.vtx[0].hashBoinc,block.nVersion);    
+    bool IsPoR = false;
+    IsPoR = (bb.Magnitude > 0 && IsResearcher(bb.cpid) && blockindex->IsProofOfStake());
     std::string PoRNarr = "";
-    if (blockindex->IsProofOfStake() && claim.HasResearchReward()) {
-        PoRNarr = "proof-of-research";
-    }
-
-    result.pushKV("flags", strprintf("%s%s",
-        blockindex->IsProofOfStake() ? "proof-of-stake" : "proof-of-work",
-        blockindex->GeneratedStakeModifier()? " stake-modifier": "") + " " + PoRNarr);
-
+    if (IsPoR) PoRNarr = "proof-of-research";
+    result.pushKV("flags",
+        strprintf("%s%s", blockindex->IsProofOfStake()? "proof-of-stake" : "proof-of-work", blockindex->GeneratedStakeModifier()? " stake-modifier": "") + " " + PoRNarr);
     result.pushKV("proofhash", blockindex->hashProof.GetHex());
     result.pushKV("entropybit", (int)blockindex->GetStakeEntropyBit());
     result.pushKV("modifier", strprintf("%016" PRIx64, blockindex->nStakeModifier));
     result.pushKV("modifierchecksum", strprintf("%08x", blockindex->nStakeModifierChecksum));
-
     UniValue txinfo(UniValue::VARR);
-
     for (auto const& tx : block.vtx)
     {
         if (fPrintTransactionDetail)
@@ -251,7 +186,7 @@ UniValue blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fP
             UniValue entry(UniValue::VOBJ);
 
             entry.pushKV("txid", tx.GetHash().GetHex());
-            TxToJSON(tx, uint256(), entry);
+            TxToJSON(tx, 0, entry);
 
             txinfo.push_back(entry);
         }
@@ -260,21 +195,51 @@ UniValue blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fP
     }
 
     result.pushKV("tx", txinfo);
-
     if (block.IsProofOfStake())
         result.pushKV("signature", HexStr(block.vchBlockSig.begin(), block.vchBlockSig.end()));
+    result.pushKV("CPID", bb.cpid);
 
-    result.pushKV("claim", ClaimToJson(block.GetClaim()));
-
+    result.pushKV("Magnitude", bb.Magnitude);
     if (fDebug3) result.pushKV("BoincHash",block.vtx[0].hashBoinc);
+    result.pushKV("LastPaymentTime",TimestampToHRDate(bb.LastPaymentTime));
 
-    if (fPrintTransactionDetail && blockindex->nIsSuperBlock == 1) {
-        result.pushKV("superblock", SuperblockToJson(block.GetSuperblock()));
+    result.pushKV("ResearchSubsidy",bb.ResearchSubsidy);
+    result.pushKV("ResearchAge",bb.ResearchAge);
+    result.pushKV("ResearchMagnitudeUnit",bb.ResearchMagnitudeUnit);
+    result.pushKV("ResearchAverageMagnitude",bb.ResearchAverageMagnitude);
+    result.pushKV("LastPORBlockHash",bb.LastPORBlockHash);
+    result.pushKV("Interest",bb.InterestSubsidy);
+    result.pushKV("GRCAddress",bb.GRCAddress);
+    if (!bb.BoincPublicKey.empty())
+    {
+        result.pushKV("BoincPublicKey",bb.BoincPublicKey);
+        result.pushKV("BoincSignature",bb.BoincSignature);
+        bool fValidSig = VerifyCPIDSignature(bb.cpid, bb.lastblockhash, bb.BoincSignature);
+        result.pushKV("SignatureValid",fValidSig);
     }
+    result.pushKV("ClientVersion",bb.clientversion);
 
+    bool IsCPIDValid2 = IsCPIDValidv2(bb,blockindex->nHeight);
+    result.pushKV("CPIDValid",IsCPIDValid2);
+
+    result.pushKV("NeuralHash",bb.NeuralHash);
+    if (bb.superblock.length() > 20)
+    {
+        //12-20-2015 Support for Binary Superblocks
+        std::string superblock=UnpackBinarySuperblock(bb.superblock);
+        std::string neural_hash = GetQuorumHash(superblock);
+        result.pushKV("SuperblockHash", neural_hash);
+        result.pushKV("SuperblockUnpackedLength", (int)superblock.length());
+        result.pushKV("SuperblockLength", (int)bb.superblock.length());
+        bool bIsBinary = Contains(bb.superblock,"<BINARY>");
+        result.pushKV("IsBinary",bIsBinary);
+        if(fPrintTransactionDetail)
+        {
+            result.pushKV("SuperblockContents", superblock);
+        }
+    }
     result.pushKV("IsSuperBlock", (int)blockindex->nIsSuperBlock);
     result.pushKV("IsContract", (int)blockindex->nIsContract);
-
     return result;
 }
 
@@ -422,7 +387,7 @@ UniValue getblock(const UniValue& params, bool fHelp)
                 "Returns details of a block with given block-hash\n");
 
     std::string strHash = params[0].get_str();
-    uint256 hash = uint256S(strHash);
+    uint256 hash(strHash);
 
     if (mapBlockIndex.count(hash) == 0)
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
@@ -610,12 +575,18 @@ bool TallyMagnitudesInSuperblock()
                     stCPID.Magnitude = magnitude;
                     stCPID.cpid = cpid;
                     mvDPORCopy[cpid]=stCPID;
-
                     StructCPID& stMagg = GetInitializedStructCPID2(cpid,mvMagnitudesCopy);
                     stMagg.cpid = cpid;
                     stMagg.Magnitude = stCPID.Magnitude;
-                    mvMagnitudesCopy[cpid] = stMagg;
+                    //Adjust total owed - in case they are a newbie:
+                    if (true)
+                    {
+                        double total_owed = 0;
+                        stMagg.owed = GetOutstandingAmountOwed(stMagg,cpid,(double)GetAdjustedTime(),total_owed,stCPID.Magnitude);
+                        stMagg.totalowed = total_owed;
+                    }
 
+                    mvMagnitudesCopy[cpid] = stMagg;
                     TotalNetworkMagnitude += stMagg.Magnitude;
                     TotalNetworkEntries++;
 
@@ -672,16 +643,14 @@ bool AdvertiseBeacon(std::string &sOutPrivKey, std::string &sOutPubKey, std::str
     sOutPrivKey = "BUG! deprecated field used";
     LOCK(cs_main);
     {
-        const std::string primary_cpid = NN::GetPrimaryCpid();
-
-        if (!IsResearcher(primary_cpid))
+        if (!IsResearcher(GlobalCPUMiningCPID.cpid))
         {
             sError = "INVESTORS_CANNOT_SEND_BEACONS";
             return false;
         }
 
         //If beacon is already in the chain, exit early
-        if (!GetBeaconPublicKey(primary_cpid, true).empty())
+        if (!GetBeaconPublicKey(GlobalCPUMiningCPID.cpid,true).empty())
         {
             // Ensure they can re-send the beacon if > 5 months old : GetBeaconPublicKey returns an empty string when > 5 months: OK.
             // Note that we allow the client to re-advertise the beacon in 5 months, so that they have a seamless and uninterrupted keypair in use (prevents a hacker from hijacking a keypair that is in use)
@@ -707,7 +676,7 @@ bool AdvertiseBeacon(std::string &sOutPrivKey, std::string &sOutPubKey, std::str
         }
 
         CKey keyBeacon;
-        if(!GenerateBeaconKeys(primary_cpid, keyBeacon))
+        if(!GenerateBeaconKeys(GlobalCPUMiningCPID.cpid, keyBeacon))
         {
             sError = "GEN_KEY_FAIL";
             return false;
@@ -719,11 +688,11 @@ bool AdvertiseBeacon(std::string &sOutPrivKey, std::string &sOutPubKey, std::str
         std::string GRCAddress = DefaultWalletAddress();
         // Public Signing Key is stored in Beacon
         std::string contract = "UNUSED;" + hashRand.GetHex() + ";" + GRCAddress + ";" + sOutPubKey;
-        LogPrintf("Creating beacon for cpid %s, %s",primary_cpid, contract);
+        LogPrintf("Creating beacon for cpid %s, %s",GlobalCPUMiningCPID.cpid, contract);
         std::string sBase = EncodeBase64(contract);
         std::string sAction = "add";
         std::string sType = "beacon";
-        std::string sName = primary_cpid;
+        std::string sName = GlobalCPUMiningCPID.cpid;
         try
         {
             // Backup config with old keys like a normal backup
@@ -805,11 +774,10 @@ UniValue rain(const UniValue& params, bool fHelp)
 
 UniValue rainbymagnitude(const UniValue& params, bool fHelp)
     {
-    if (fHelp || (params.size() < 2 || params.size() > 3))
+    if (fHelp || (params.size() < 1 || params.size() > 2))
         throw runtime_error(
-                "rainbymagnitude <whitelisted project> <amount> [message]\n"
+                "rainbymagnitude <amount> [message]\n"
                 "\n"
-                "<whitelisted project> --> Required: If a project is specified, rain will be limited to that project. Use * for network-wide.\n"
                 "<amount> --> Required: Specify amount of coints in double to be rained\n"
                 "[message] -> Optional: Provide a message rained to all rainees\n"
                 "\n"
@@ -817,84 +785,66 @@ UniValue rainbymagnitude(const UniValue& params, bool fHelp)
 
     UniValue res(UniValue::VOBJ);
 
-    std::string sProject = params[0].get_str();
-
-    if (fDebug) LogPrintf("rainbymagnitude: sProject = %s", sProject.c_str());
-
-    double dAmount = params[1].get_real();
+    double dAmount = params[0].get_real();
 
     if (dAmount <= 0)
         throw runtime_error("Amount must be greater then 0");
 
     std::string sMessage = "";
 
-    if (params.size() > 2)
-        sMessage = params[2].get_str();
+    if (params.size() > 1)
+        sMessage = params[1].get_str();
 
-    // Make sure statistics are up to date. This will do nothing if a convergence has already been cached and is clean.
-    bool bStatsAvail = ScraperSynchronizeDPOR();
+    LOCK2(cs_main, pwalletMain->cs_wallet);
 
-    if (!bStatsAvail)
-    {
-        throw JSONRPCError(RPC_MISC_ERROR, "Wallet has not formed a convergence from statistics information.");
-    }
+    CWalletTx wtx;
+    wtx.mapValue["comment"] = "Rain By Magnitude";
+    std::set<CBitcoinAddress> setAddress;
+    std::vector<std::pair<CScript, int64_t> > vecSend;
 
-    ScraperStats mScraperConvergedStats;
-    {
-        LOCK(cs_ConvergedScraperStatsCache);
+    wtx.hashBoinc = "<NARR>Rain By Magnitude: " + MakeSafeMessage(sMessage) + "</NARR>";
 
-        // Make a local copy of the cached stats in the convergence and release the lock.
-        mScraperConvergedStats = ConvergedScraperStatsCache.mScraperConvergedStats;
-    }
+    // Gather Magnitude data
+//    std::string sSuperblock = ReadCache("superblock", "magnitudes").value;
 
-    if (fDebug) LogPrintf("rainbymagnitude: mScraperConvergedStats size = %u", mScraperConvergedStats.size());
+//    if (sSuperblock.empty())
+//        throw runtime_error("Unable to load superblock data");
+
+//    std::vector<std::string> vSuperblock = split(sSuperblock, ";");
 
     double dTotalAmount = 0;
     int64_t nTotalAmount = 0;
 
-    double dTotalMagnitude = 0;
+    StructCPID structcpid = mvNetwork["NETWORK"];
 
-    statsobjecttype rainbymagmode = (sProject == "*" ? statsobjecttype::byCPID : statsobjecttype::byCPIDbyProject);
+    // Use total network magnitude here as using 115000 can results in a lower then intended sent amount due to a missing project
+    double dTotalNetworkMagnitude = structcpid.NetworkMagnitude;
 
-    //------- CPID ----------------CPID address -- Mag
-    std::map<NN::Cpid, std::pair<CBitcoinAddress, double>> mCPIDRain;
-
-    for (const auto& entry : mScraperConvergedStats)
+    for(map<string,StructCPID>::iterator ii=mvMagnitudes.begin(); ii!=mvMagnitudes.end(); ++ii)
     {
-        // Only consider entries along the specfied dimension
-        if (entry.first.objecttype == rainbymagmode)
-        {
-            NN::Cpid CPIDKey;
+        StructCPID structMag = mvMagnitudes[(*ii).first];
 
-            if (rainbymagmode == statsobjecttype::byCPIDbyProject)
-            {
-                std::vector<std::string> vObjectStatsKey = split(entry.first.objectID, ",");
-
-                // Only process elements that match the specified project if in project level rain.
-                if (vObjectStatsKey[0] != sProject) continue;
-
-                CPIDKey = NN::Cpid::Parse(vObjectStatsKey[1]);
-            }
-            else
-            {
-                CPIDKey = NN::Cpid::Parse(entry.first.objectID);
-            }
-
-            double dCPIDMag = std::round(entry.second.statsvalue.dMag);
-
-            // Zero mag CPIDs do not get paid.
-            if (!dCPIDMag) continue;
-
+        if (structMag.initialized &&
+            !structMag.cpid.empty() &&
+            structMag.Magnitude > 0
+           )
+    {
             // Find beacon grc address
-            std::string scacheContract = ReadCache(Section::BEACON, CPIDKey.ToString()).value;
+            std::string scacheContract = ReadCache(Section::BEACON, structMag.cpid).value;
 
             // Should never occur but we know seg faults can occur in some cases
-            if (scacheContract.empty()) continue;
+            if (scacheContract.empty())
+                continue;
 
             std::string sContract = DecodeBase64(scacheContract);
             std::string sGRCAddress = ExtractValue(sContract, ";", 2);
 
             if (fDebug) LogPrintf("INFO: rainbymagnitude: sGRCaddress = %s.", sGRCAddress);
+
+            double dPayout = (structMag.Magnitude / dTotalNetworkMagnitude) * dAmount;
+
+            if (dPayout <= 0)
+                continue;
 
             CBitcoinAddress address(sGRCAddress);
 
@@ -904,49 +854,19 @@ UniValue rainbymagnitude(const UniValue& params, bool fHelp)
                 continue;
             }
 
-            mCPIDRain[CPIDKey] = std::make_pair(address, dCPIDMag);
-
-            // Increment the accumulated mag. This will be equal to the total mag of the valid CPIDs entered
-            // into the RAIN map, and will be used to normalize the payments.
-            dTotalMagnitude += dCPIDMag;
-
-            if (fDebug) LogPrintf("rainmagnitude: CPID = %s, address = %s, dCPIDMag = %f",
-                                  CPIDKey.ToString(), sGRCAddress, dCPIDMag);
-        }
-    }
-
-    if (mCPIDRain.empty() || !dTotalMagnitude)
-    {
-        throw JSONRPCError(RPC_MISC_ERROR, "No CPIDs to pay and/or total CPID magnitude is zero. This could be caused by an incorrect project specified.");
-    }
-
-    std::vector<std::pair<CScript, int64_t> > vecSend;
-
-    // Setup the payment vector now that the CPID entries and mags have been validated and the total mag is computed.
-    for(const auto& iter : mCPIDRain)
-    {
-        double dCPIDMag = iter.second.second;
-
-            double dPayout = (dCPIDMag / dTotalMagnitude) * dAmount;
-
             dTotalAmount += dPayout;
 
+            setAddress.insert(address);
+
             CScript scriptPubKey;
-            scriptPubKey.SetDestination(iter.second.first.Get());
+            scriptPubKey.SetDestination(address.Get());
 
             int64_t nAmount = roundint64(dPayout * COIN);
             nTotalAmount += nAmount;
 
             vecSend.push_back(std::make_pair(scriptPubKey, nAmount));
-
-            if (fDebug) LogPrintf("rainmagnitude: address = %s, amount = %f", iter.second.first.ToString(), CoinToDouble(nAmount));
+        }
     }
-
-    LOCK2(cs_main, pwalletMain->cs_wallet);
-
-    CWalletTx wtx;
-    wtx.mapValue["comment"] = "Rain By Magnitude";
-    wtx.hashBoinc = "<NARR>Rain By Magnitude: " + MakeSafeMessage(sMessage) + "</NARR>";
 
     EnsureWalletIsUnlocked();
     // Check funds
@@ -1021,8 +941,7 @@ UniValue advertisebeacon(const UniValue& params, bool fHelp)
      * nothing to import. This saves a migrating users from copy-pasting
      * the key string to importprivkey command.
      */
-    const std::string primary_cpid = NN::GetPrimaryCpid();
-    bool importResult= ImportBeaconKeysFromConfig(primary_cpid, pwalletMain);
+    bool importResult= ImportBeaconKeysFromConfig(GlobalCPUMiningCPID.cpid, pwalletMain);
     res.pushKV("ConfigKeyImported", importResult);
 
     std::string sOutPubKey = "";
@@ -1032,7 +951,7 @@ UniValue advertisebeacon(const UniValue& params, bool fHelp)
     bool fResult = AdvertiseBeacon(sOutPrivKey,sOutPubKey,sError,sMessage);
 
     res.pushKV("Result", fResult ? "SUCCESS" : "FAIL");
-    res.pushKV("CPID",primary_cpid.c_str());
+    res.pushKV("CPID",GlobalCPUMiningCPID.cpid.c_str());
     res.pushKV("Message",sMessage.c_str());
 
     if (!sError.empty())
@@ -1211,8 +1130,7 @@ UniValue explainmagnitude(const UniValue& params, bool fHelp)
 
     // First try local node before bothering network...
 
-    const std::string primary_cpid = NN::GetPrimaryCpid();
-    std::string sNeuralResponse = NN::GetInstance()->ExplainMagnitude(primary_cpid);
+    std::string sNeuralResponse = NN::GetInstance()->ExplainMagnitude(GlobalCPUMiningCPID.cpid);
 
     if (sNeuralResponse.length() < 25)
     {
@@ -1225,7 +1143,7 @@ UniValue explainmagnitude(const UniValue& params, bool fHelp)
 
                 msNeuralResponse = "";
 
-                AsyncNeuralRequest("explainmag", primary_cpid, 10);
+                AsyncNeuralRequest("explainmag", GlobalCPUMiningCPID.cpid, 10);
             }
         }
 
@@ -1270,7 +1188,7 @@ UniValue lifetime(const UniValue& params, bool fHelp)
     UniValue c(UniValue::VOBJ);
     UniValue res(UniValue::VOBJ);
 
-    const NN::MiningId mining_id = NN::Researcher::Get()->Id();
+    std::string cpid = NN::GetPrimaryCpid();
     std::string Narr = ToString(GetAdjustedTime());
 
     c.pushKV("Lifetime Payments Report", Narr);
@@ -1290,11 +1208,11 @@ UniValue lifetime(const UniValue& params, bool fHelp)
         if (pindex == pindexBest)
             break;
 
-        if (pindex->GetMiningId() == mining_id && (pindex->nResearchSubsidy > 0))
+        if (pindex->GetCPID() == cpid && (pindex->nResearchSubsidy > 0))
             res.pushKV(ToString(pindex->nHeight), RoundToString(pindex->nResearchSubsidy, 2));
     }
     //8-14-2015
-    StructCPID& stCPID = GetInitializedStructCPID2(mining_id.ToString(), mvResearchAge);
+    StructCPID& stCPID = GetInitializedStructCPID2(cpid, mvResearchAge);
 
     res.pushKV("RA Magnitude Sum", stCPID.TotalMagnitude);
     res.pushKV("RA Accuracy", stCPID.Accuracy);
@@ -1416,8 +1334,8 @@ UniValue staketime(const UniValue& params, bool fHelp)
 
     LOCK2(cs_main, pwalletMain->cs_wallet);
 
-    const std::string cpid = NN::GetPrimaryCpid();
-    const std::string GRCAddress = DefaultWalletAddress();
+    std::string cpid = GlobalCPUMiningCPID.cpid;
+    std::string GRCAddress = DefaultWalletAddress();
     GetEarliestStakeTime(GRCAddress, cpid);
 
     res.pushKV("GRCTime", ReadCache(Section::GLOBAL, "nGRCTime").timestamp);
@@ -2076,7 +1994,8 @@ UniValue sendblock(const UniValue& params, bool fHelp)
 
     UniValue res(UniValue::VOBJ);
 
-    uint256 hash = uint256S(params[0].get_str());
+    std::string sHash = params[0].get_str();
+    uint256 hash = uint256(sHash);
     bool fResult = AskForOutstandingBlocks(hash);
 
     res.pushKV("Requesting", hash.ToString());
@@ -2284,7 +2203,7 @@ UniValue askforoutstandingblocks(const UniValue& params, bool fHelp)
 
     UniValue res(UniValue::VOBJ);
 
-    bool fResult = AskForOutstandingBlocks(uint256());
+    bool fResult = AskForOutstandingBlocks(uint256(0));
 
     res.pushKV("Sent.", fResult);
 
@@ -2396,25 +2315,28 @@ UniValue SuperblockReport(int lookback, bool displaycontract, std::string cpid)
         if (!pblockindex->IsInMainChain()) continue;
         if (IsSuperBlock(pblockindex))
         {
-            const NN::ClaimOption claim = GetClaimByIndex(pblockindex);
-
-            if (claim && claim->ContainsSuperblock())
+            MiningCPID bb = GetBoincBlockByIndex(pblockindex);
+            if (bb.superblock.length() > 20)
             {
-                const NN::Superblock& superblock = claim->m_superblock;
+                double out_beacon_count = 0;
+                double out_participant_count = 0;
+                double out_avg = 0;
+                // Binary Support 12-20-2015
+                std::string superblock = UnpackBinarySuperblock(bb.superblock);
+                GetSuperblockAvgMag(superblock,out_beacon_count,out_participant_count,out_avg,true,pblockindex->nHeight);
 
                 UniValue c(UniValue::VOBJ);
                 c.pushKV("Block #" + ToString(pblockindex->nHeight),pblockindex->GetBlockHash().GetHex());
                 c.pushKV("Date",TimestampToHRDate(pblockindex->nTime));
-                c.pushKV("Average Mag", superblock.m_cpids.AverageMagnitude());
-                c.pushKV("Wallet Version", claim->m_client_version);
-
-                if (const NN::CpidOption cpid_parsed = NN::MiningId::Parse(cpid).TryCpid())
+                c.pushKV("Average Mag",out_avg);
+                c.pushKV("Wallet Version",bb.clientversion);
+                double mag = GetSuperblockMagnitudeByCPID(superblock, cpid);
+                if (!cpid.empty())
                 {
-                    c.pushKV("Magnitude", superblock.m_cpids.MagnitudeOf(*cpid_parsed));
+                    c.pushKV("Magnitude",mag);
                 }
-
                 if (displaycontract)
-                    c.pushKV("Contract Contents", SuperblockToJson(superblock));
+                    c.pushKV("Contract Contents: ", superblock);
 
                 results.push_back(c);
             }
@@ -2431,6 +2353,7 @@ UniValue MagnitudeReport(std::string cpid)
     std::string Narr = ToString(GetAdjustedTime());
     c.pushKV("RSA Report",Narr);
     results.push_back(c);
+    double total_owed = 0;
     double magnitude_unit = GRCMagnitudeUnit(GetAdjustedTime());
     if (!pindexBest) return results;
 
@@ -2450,40 +2373,62 @@ UniValue MagnitudeReport(std::string cpid)
                 if (cpid.empty() || (Contains(structMag.cpid,cpid)))
                 {
                     UniValue entry(UniValue::VOBJ);
-                    StructCPID& stCPID = GetLifetimeCPID(structMag.cpid); // Rescan...
-                    double days = (GetAdjustedTime() - stCPID.LowLockTime) / 86400.0;
-                    entry.pushKV("CPID",structMag.cpid);
-                    entry.pushKV("Earliest Payment Time",TimestampToHRDate(stCPID.LowLockTime));
-                    entry.pushKV("Magnitude (Last Superblock)", structMag.Magnitude);
-                    entry.pushKV("Research Payments (14 days)",structMag.payments);
+
+                    if (IsResearchAgeEnabled(pindexBest->nHeight))
                     {
-                        int64_t nTime = GetAdjustedTime();
-                        double dMagnitudeUnit = GRCMagnitudeUnit(nTime);
-                        double dAccrualAge, AvgMagnitude;
-                        int64_t nBoinc = ComputeResearchAccrual(nTime, structMag.cpid, pindexBest, false, 69, dAccrualAge, dMagnitudeUnit, AvgMagnitude);
-                        entry.pushKV("Owed", nBoinc / (double)COIN);
+                        StructCPID& stCPID = GetLifetimeCPID(structMag.cpid); // Rescan...
+                        double days = (GetAdjustedTime() - stCPID.LowLockTime) / 86400.0;
+                        entry.pushKV("CPID",structMag.cpid);
+                        entry.pushKV("Earliest Payment Time",TimestampToHRDate(stCPID.LowLockTime));
+                        entry.pushKV("Magnitude (Last Superblock)", structMag.Magnitude);
+                        entry.pushKV("Research Payments (14 days)",structMag.payments);
+                        {
+                            int64_t nTime = GetAdjustedTime();
+                            double dMagnitudeUnit = GRCMagnitudeUnit(nTime);
+                            double dAccrualAge, AvgMagnitude;
+                            int64_t nBoinc = ComputeResearchAccrual(nTime, structMag.cpid, "", pindexBest, false, 69, dAccrualAge, dMagnitudeUnit, AvgMagnitude);
+                            entry.pushKV("Owed", nBoinc / (double)COIN);
+                        }
+                        entry.pushKV("Daily Paid",structMag.payments/14);
+                        // Research Age - Calculate Expected 14 Day Owed, and Daily Owed:
+                        double dExpected14 = magnitude_unit * structMag.Magnitude * 14;
+                        entry.pushKV("Expected Earnings (14 days)", dExpected14);
+                        entry.pushKV("Expected Earnings (Daily)", dExpected14/14);
+
+                        // Fulfillment %
+                        double fulfilled = ((structMag.payments/14) / ((dExpected14/14)+.01)) * 100;
+                        entry.pushKV("Fulfillment %", fulfilled);
+
+                        entry.pushKV("CPID Lifetime Interest Paid", stCPID.InterestSubsidy);
+                        entry.pushKV("CPID Lifetime Research Paid", stCPID.ResearchSubsidy);
+                        entry.pushKV("CPID Lifetime Magnitude Sum", stCPID.TotalMagnitude);
+                        entry.pushKV("CPID Lifetime Accuracy", stCPID.Accuracy);
+
+                        entry.pushKV("CPID Lifetime Payments Per Day", stCPID.ResearchSubsidy/(days+.01));
+                        entry.pushKV("Last Blockhash Paid", stCPID.BlockHash);
+                        entry.pushKV("Last Block Paid",stCPID.LastBlock);
+                        entry.pushKV("Tx Count",(int)stCPID.Accuracy);
+
+                        results.push_back(entry);
                     }
-                    entry.pushKV("Daily Paid",structMag.payments/14);
-                    // Research Age - Calculate Expected 14 Day Owed, and Daily Owed:
-                    double dExpected14 = magnitude_unit * structMag.Magnitude * 14;
-                    entry.pushKV("Expected Earnings (14 days)", dExpected14);
-                    entry.pushKV("Expected Earnings (Daily)", dExpected14/14);
-
-                    // Fulfillment %
-                    double fulfilled = ((structMag.payments/14) / ((dExpected14/14)+.01)) * 100;
-                    entry.pushKV("Fulfillment %", fulfilled);
-
-                    entry.pushKV("CPID Lifetime Interest Paid", stCPID.InterestSubsidy);
-                    entry.pushKV("CPID Lifetime Research Paid", stCPID.ResearchSubsidy);
-                    entry.pushKV("CPID Lifetime Magnitude Sum", stCPID.TotalMagnitude);
-                    entry.pushKV("CPID Lifetime Accuracy", stCPID.Accuracy);
-
-                    entry.pushKV("CPID Lifetime Payments Per Day", stCPID.ResearchSubsidy/(days+.01));
-                    entry.pushKV("Last Blockhash Paid", stCPID.BlockHash);
-                    entry.pushKV("Last Block Paid",stCPID.LastBlock);
-                    entry.pushKV("Tx Count",(int)stCPID.Accuracy);
-
-                    results.push_back(entry);
+                    else
+                    {
+                        entry.pushKV("CPID",structMag.cpid);
+                        entry.pushKV("Last Block Paid",structMag.LastBlock);
+                        entry.pushKV("DPOR Magnitude",  structMag.Magnitude);
+                        entry.pushKV("Payment Timespan (Days)",structMag.PaymentTimespan);
+                        entry.pushKV("Total Earned (14 days)",structMag.totalowed);
+                        entry.pushKV("DPOR Payments (14 days)",structMag.payments);
+                        double outstanding = Round(structMag.totalowed - structMag.payments,2);
+                        total_owed += outstanding;
+                        entry.pushKV("Outstanding Owed (14 days)",outstanding);
+                        entry.pushKV("InterestPayments (14 days)",structMag.interestPayments);
+                        entry.pushKV("Last Payment Time",TimestampToHRDate(structMag.LastPaymentTime));
+                        entry.pushKV("Owed",structMag.owed);
+                        entry.pushKV("Daily Paid",structMag.payments/14);
+                        entry.pushKV("Daily Owed",structMag.totalowed/14);
+                        results.push_back(entry);
+                    }
                 }
             }
         }
@@ -2492,6 +2437,7 @@ UniValue MagnitudeReport(std::string cpid)
 
         UniValue entry2(UniValue::VOBJ);
         entry2.pushKV("Magnitude Unit (GRC payment per Magnitude per day)", magnitude_unit);
+        if (!IsResearchAgeEnabled(pindexBest->nHeight) && cpid.empty()) entry2.pushKV("Grand Total Outstanding Owed",total_owed);
         results.push_back(entry2);
 
         int nMaxDepth = (nBestHeight-CONSENSUS_LOOKBACK) - ( (nBestHeight-CONSENSUS_LOOKBACK) % BLOCK_GRANULARITY);
@@ -2573,7 +2519,7 @@ UniValue GetJsonUnspentReport()
             // Prove the magnitude from a 3rd party standpoint:
             if (!sXmlBlockHash.empty() && !sMagnitude.empty() && !sXmlSigned.empty())
             {
-                CBlockIndex* pblockindexMagnitude = mapBlockIndex[uint256S(sXmlBlockHash)];
+                CBlockIndex* pblockindexMagnitude = mapBlockIndex[uint256(sXmlBlockHash)];
                 if (pblockindexMagnitude)
                 {
                     bool fResult = VerifyCPIDSignature(sXmlCPID, sXmlBlockHash, sXmlSigned);
@@ -2665,8 +2611,8 @@ UniValue GetJsonUnspentReport()
     {
         // Prove the contents of the XML as a 3rd party
         CTransaction tx2;
-        uint256 hashBlock;
-        uint256 uTXID = uint256S(ExtractXML(vXML[x],"<TXID>","</TXID>"));
+        uint256 hashBlock = 0;
+        uint256 uTXID(ExtractXML(vXML[x],"<TXID>","</TXID>"));
         std::string sAmt = ExtractXML(vXML[x],"<AMOUNT>","</AMOUNT>");
         std::string sPos = ExtractXML(vXML[x],"<POS>","</POS>");
         std::string sXmlSig = ExtractXML(vXML[x],"<SIG>","</SIG>");
@@ -2676,7 +2622,7 @@ UniValue GetJsonUnspentReport()
         int32_t iPos = RoundFromString(sPos,0);
         std::string sPubKey = ExtractXML(vXML[x],"<PUBKEY>","</PUBKEY>");
 
-        if (!sPubKey.empty() && !sAmt.empty() && !sPos.empty() && !uTXID.IsNull())
+        if (!sPubKey.empty() && !sAmt.empty() && !sPos.empty() && uTXID > 0)
         {
 
             if (GetTransaction(uTXID, tx2, hashBlock))
