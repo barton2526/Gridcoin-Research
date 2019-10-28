@@ -142,7 +142,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "consolidateunspent"     , 2 },
     { "move"                   , 2 },
     { "move"                   , 3 },
-    { "rainbymagnitude"        , 0 },
+    { "rainbymagnitude"        , 1 },
     { "reservebalance"         , 0 },
     { "reservebalance"         , 1 },
     { "scanforunspent"         , 1 },
@@ -183,6 +183,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "sendalert2"             , 1 },
     { "sendalert2"             , 4 },
     { "sendalert2"             , 5 },
+    { "testnewsb"              , 0 },
 
     // Network
     { "addpoll"                , 1 },
