@@ -195,7 +195,7 @@ string FormatMoney(int64_t n, bool fPlus)
 
     // Right-trim excess zeros before the decimal point:
     int nTrim = 0;
-    for (int i = str.size()-1; (str[i] == '0' && isdigit(str[i-2])); --i)
+    for (int i = str.size()-1; (str[i] == '0' && IsDigit(str[i-2])); --i)
         ++nTrim;
     if (nTrim)
         str.erase(str.size()-nTrim, nTrim);
@@ -225,7 +225,7 @@ bool ParseMoney(const char* pszIn, int64_t& nRet)
         {
             p++;
             int64_t nMult = CENT*10;
-            while (isdigit(*p) && (nMult > 0))
+            while (IsDigit(*p) && (nMult > 0))
             {
                 nUnits += nMult * (*p++ - '0');
                 nMult /= 10;
@@ -234,7 +234,7 @@ bool ParseMoney(const char* pszIn, int64_t& nRet)
         }
         if (isspace(*p))
             break;
-        if (!isdigit(*p))
+        if (!IsDigit(*p))
             return false;
         strWhole.insert(strWhole.end(), *p);
     }

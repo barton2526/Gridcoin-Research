@@ -6,6 +6,7 @@
 #ifndef BITCOIN_BIGNUM_H
 #define BITCOIN_BIGNUM_H
 
+#include <util/strencodings.h>
 #include "serialize.h"
 #include "uint256.h"
 #include "version.h"
@@ -362,7 +363,7 @@ public:
             fNegative = true;
             psz++;
         }
-        if (psz[0] == '0' && tolower(psz[1]) == 'x')
+        if (psz[0] == '0' && ToLower((unsigned char)psz[1]) == 'x')
             psz += 2;
         while (isspace(*psz))
             psz++;
