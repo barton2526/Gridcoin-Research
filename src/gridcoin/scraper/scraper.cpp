@@ -1334,7 +1334,7 @@ bool ScraperHousekeeping()
 
 std::string lowercase(std::string s)
 {
-    std::transform(s.begin(), s.end(), s.begin(), ToLower(s));
+    std::transform(s.begin(), s.end(), s.begin(), ToLower);
 
     return s;
 }
