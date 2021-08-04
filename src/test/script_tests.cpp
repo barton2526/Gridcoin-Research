@@ -54,8 +54,8 @@ ParseScript(string s)
         {
             // Empty string, ignore. (boost::split given '' will return one word)
         }
-        else if (all(w, IsDigit()) ||
-            (starts_with(w, "-") && all(string(w.begin()+1, w.end()), IsDigit())))
+        else if (all(w, ::IsDigit) ||
+            (starts_with(w, "-") && all(string(w.begin()+1, w.end()), ::IsDigit)))
         {
             // Number
             int64_t n = atoi64(w);

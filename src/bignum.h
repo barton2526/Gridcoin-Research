@@ -355,7 +355,7 @@ public:
     {
         // skip 0x
         const char* psz = str.c_str();
-        while (isspace(*psz))
+        while (IsSpace(*psz))
             psz++;
         bool fNegative = false;
         if (*psz == '-')
@@ -365,7 +365,7 @@ public:
         }
         if (psz[0] == '0' && ToLower((unsigned char)psz[1]) == 'x')
             psz += 2;
-        while (isspace(*psz))
+        while (IsSpace(*psz))
             psz++;
 
         // hex string to bignum

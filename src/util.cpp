@@ -9,6 +9,7 @@
 #include "version.h"
 #include "ui_interface.h"
 #include "util.h"
+#include <util/strencodings.h>
 
 #include <boost/algorithm/string/case_conv.hpp> // for to_lower()
 #include <boost/algorithm/string/join.hpp>
@@ -217,7 +218,7 @@ bool ParseMoney(const char* pszIn, int64_t& nRet)
     string strWhole;
     int64_t nUnits = 0;
     const char* p = pszIn;
-    while (isspace(*p))
+    while (IsSpace(*p))
         p++;
     for (; *p; p++)
     {
@@ -232,14 +233,14 @@ bool ParseMoney(const char* pszIn, int64_t& nRet)
             }
             break;
         }
-        if (isspace(*p))
+        if (IsSpace(*p))
             break;
         if (!IsDigit(*p))
             return false;
         strWhole.insert(strWhole.end(), *p);
     }
     for (; *p; p++)
-        if (!isspace(*p))
+        if (!IsSpace(*p))
             return false;
     if (strWhole.size() > 10) // guard against 63 bit overflow
         return false;
