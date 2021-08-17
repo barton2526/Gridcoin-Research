@@ -15,7 +15,7 @@ export GOAL="install"
 # BDB complained that "replication requires locking support". We need
 # to point the compiler at the local BDB installation:
 export BDB_PREFIX="${BASE_ROOT_DIR}/db4"
-export GRIDCOIN_CONFIG="--with-gui --enable-reduce-exports BDB_LIBS='-L${BDB_PREFIX}/lib -ldb_cxx-4.8' BDB_CFLAGS='-I${BDB_PREFIX}/include'"
+export GRIDCOIN_CONFIG="--with-gui --enable-reduce-exports --enable-werror BDB_LIBS='-L${BDB_PREFIX}/lib -ldb_cxx-4.8' BDB_CFLAGS='-I${BDB_PREFIX}/include'"
 export NEED_XVFB="true"
 export NO_DEPENDS=1
 export OSX_SDK=""
