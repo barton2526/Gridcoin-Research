@@ -1,9 +1,4 @@
-#include <boost/assert.hpp>
-#include <boost/assign/list_of.hpp>
-#include <boost/assign/list_inserter.hpp>
-#include <boost/assign/std/vector.hpp>
 #include <boost/test/unit_test.hpp>
-#include <boost/tuple/tuple.hpp>
 
 #include <openssl/ec.h>
 #include <openssl/err.h>
@@ -16,7 +11,6 @@
 #include "wallet/ismine.h"
 
 using namespace std;
-using namespace boost::assign;
 
 typedef vector<unsigned char> valtype;
 
@@ -76,8 +70,8 @@ BOOST_AUTO_TEST_CASE(multisig_verify)
     CScript s;
 
     // Test a AND b:
-    keys.clear();
-    keys += key[0],key[1]; // magic operator+= from boost.assign
+    keys.assign(1,key[0]);
+    keys.push_back(key[1]);
     s = sign_multisig(a_and_b, keys, txTo[0], 0);
     BOOST_CHECK(VerifyScript(s, a_and_b, txTo[0], 0, 0));
 
