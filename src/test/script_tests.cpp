@@ -1,11 +1,6 @@
 #include <vector>
 #include <sstream>
 #include <util/strencodings.h>
-#include <boost/algorithm/string/classification.hpp>
-#include <boost/algorithm/string/predicate.hpp>
-#include <boost/algorithm/string/replace.hpp>
-#include <boost/algorithm/string/split.hpp>
-#include <boost/preprocessor/stringize.hpp>
 #include <boost/test/unit_test.hpp>
 
 #include "main.h"
@@ -18,7 +13,6 @@
 #include <univalue.h>
 
 using namespace std;
-using namespace boost::algorithm;
 
 extern uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo, unsigned int nIn, int nHashType);
 extern bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CTransaction& txTo, unsigned int nIn, int nHashType);
