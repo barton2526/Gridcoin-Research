@@ -6,12 +6,13 @@
 #include <boost/date_time/posix_time/posix_time_types.hpp>
 #include <boost/test/unit_test.hpp>
 
-#include "main.h"
-#include "wallet/wallet.h"
-#include "net.h"
-#include "util.h"
-#include "random.h"
-#include "banman.h"
+#include <arith_uint256.h>
+#include <main.h>
+#include <wallet/wallet.h>
+#include <net.h>
+#include <util.h>
+#include <random.h>
+#include <banman.h>
 
 #include <test/test_gridcoin.h>
 
@@ -132,10 +133,26 @@ CTransaction RandomOrphan()
     return it->second;
 }
 
+static void MakeNewKeyWithFastRandomContext(CKey& key)
+{
+    std::vector<unsigned char> keydata;
+    keydata = g_insecure_rand_ctx.randbytes(32);
+    key.Set(keydata.data(), keydata.data() + keydata.size(), /*fCompressedIn*/ true);
+    assert(key.IsValid());
+}
+
 BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 {
+    // This test had non-deterministic coverage due to
+    // randomly selected seeds.
+    // This seed is chosen so that all branches of the function
+    // ecdsa_signature_parse_der_lax are executed during this test.
+    // Specifically branches that run only when an ECDSA
+    // signature's R and S values have leading zeros.
+    g_insecure_rand_ctx = FastRandomContext(ArithToUint256(arith_uint256(33)));
+
     CKey key;
-    key.MakeNewKey(true);
+    MakeNewKeyWithFastRandomContext(key);
     CBasicKeyStore keystore;
     BOOST_CHECK(keystore.AddKey(key));
 
