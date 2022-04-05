@@ -267,6 +267,11 @@ const unsigned char vchMaxModHalfOrder[32] = {
 
 const unsigned char vchZero[0] = {};
 
+bool CKey::Check(const unsigned char *vch) {
+    return CompareBigEndian(vch, 32, vchZero, 0) > 0 &&
+           CompareBigEndian(vch, 32, vchMaxModOrder, 32) <= 0;
+}
+
 bool CKey::CheckSignatureElement(const unsigned char *vch, int len, bool half) {
     return CompareBigEndian(vch, len, vchZero, 0) > 0 &&
            CompareBigEndian(vch, len, half ? vchMaxModHalfOrder : vchMaxModOrder, 32) <= 0;

@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2012 The Bitcoin developers
+// Copyright (c) 2009-2021 The Bitcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or https://opensource.org/licenses/mit-license.php.
 #ifndef BITCOIN_KEY_H
@@ -8,10 +8,10 @@
 #include <stdexcept>
 #include <vector>
 
-#include "serialize.h"
-#include "support/allocators/secure.h"
-#include "uint256.h"
-#include "util.h"
+#include <serialize.h>
+#include <support/allocators/secure.h>
+#include <uint256.h>
+#include <util.h>
 
 #include <openssl/ec.h> // for EC_KEY definition
 
@@ -118,6 +118,20 @@ typedef std::vector<unsigned char, secure_allocator<unsigned char> > CSecret;
 /** An encapsulated OpenSSL Elliptic Curve key (public and/or private) */
 class CKey
 {
+private:
+    //! Whether this private key is valid. We check for correctness when modifying the key
+    //! data, so fValid should always correspond to the actual state.
+    bool fValid;
+
+    //! Whether the public key corresponding to this private key is (to be) compressed.
+    bool fCompressed;
+
+    //! The actual byte data
+    std::vector<unsigned char, secure_allocator<unsigned char> > keydata;
+
+    //! Check whether the 32-byte array pointed to by vch is valid keydata.
+    bool static Check(const unsigned char* vch);
+
 protected:
     EC_KEY* pkey;
     bool fSet;
@@ -146,6 +160,21 @@ public:
     CPrivKey GetPrivKey() const;
     bool SetPubKey(const CPubKey& vchPubKey);
     CPubKey GetPubKey() const;
+
+    //! Initialize using begin and end iterators to byte data.
+    template <typename T>
+    void Set(const T pbegin, const T pend, bool fCompressedIn)
+    {
+        if (size_t(pend - pbegin) != keydata.size()) {
+            fValid = false;
+        } else if (Check(&pbegin[0])) {
+            memcpy(keydata.data(), (unsigned char*)&pbegin[0], keydata.size());
+            fValid = true;
+            fCompressed = fCompressedIn;
+        } else {
+            fValid = false;
+        }
+    }
 
     bool Sign(uint256 hash, std::vector<unsigned char>& vchSig);
 
