@@ -588,7 +588,7 @@ private:
 
     FILE *src;            //!< source file
     uint64_t nSrcPos;     //!< how many bytes have been read from source
-    uint64_t nReadPos;    //!< how many bytes have been read from this
+    uint64_t m_read_pos;    //!< how many bytes have been read from this
     uint64_t nReadLimit;  //!< up to which position we're allowed to read
     uint64_t nRewind;     //!< how many bytes we guarantee to rewind
     std::vector<char> vchBuf; //!< the buffer
@@ -598,7 +598,7 @@ protected:
     bool Fill() {
         unsigned int pos = nSrcPos % vchBuf.size();
         unsigned int readNow = vchBuf.size() - pos;
-        unsigned int nAvail = vchBuf.size() - (nSrcPos - nReadPos) - nRewind;
+        unsigned int nAvail = vchBuf.size() - (nSrcPos - m_read_pos) - nRewind;
         if (nAvail < readNow)
             readNow = nAvail;
         if (readNow == 0)
@@ -614,7 +614,7 @@ protected:
 
 public:
     CBufferedFile(FILE *fileIn, uint64_t nBufSize, uint64_t nRewindIn, int nTypeIn, int nVersionIn) :
-        nType(nTypeIn), nVersion(nVersionIn), nSrcPos(0), nReadPos(0), nReadLimit(std::numeric_limits<uint64_t>::max()), nRewind(nRewindIn), vchBuf(nBufSize, 0)
+        nType(nTypeIn), nVersion(nVersionIn), nSrcPos(0), m_read_pos(0), nReadLimit(std::numeric_limits<uint64_t>::max()), nRewind(nRewindIn), vchBuf(nBufSize, 0)
     {
         src = fileIn;
     }
@@ -641,41 +641,41 @@ public:
 
     //! check whether we're at the end of the source file
     bool eof() const {
-        return nReadPos == nSrcPos && feof(src);
+        return m_read_pos == nSrcPos && feof(src);
     }
 
     //! read a number of bytes
     void read(Span<std::byte> dst) {
-        if (dst.size() + nReadPos > nReadLimit)
+        if (dst.size() + m_read_pos > nReadLimit)
             throw std::ios_base::failure("Read attempted past buffer limit");
         while (dst.size() > 0) {
-            if (nReadPos == nSrcPos)
+            if (m_read_pos == nSrcPos)
                 Fill();
-            unsigned int pos = nReadPos % vchBuf.size();
+            unsigned int pos = m_read_pos % vchBuf.size();
             size_t nNow = dst.size();
             if (nNow + pos > vchBuf.size())
                 nNow = vchBuf.size() - pos;
-            if (nNow + nReadPos > nSrcPos)
-                nNow = nSrcPos - nReadPos;
+            if (nNow + m_read_pos > nSrcPos)
+                nNow = nSrcPos - m_read_pos;
             memcpy(dst.data(), &vchBuf[pos], nNow);
-            nReadPos += nNow;
+            m_read_pos += nNow;
             dst = dst.subspan(nNow);
         }
     }
 
     //! return the current reading position
     uint64_t GetPos() const {
-        return nReadPos;
+        return m_read_pos;
     }
 
     //! rewind to a given reading position
     bool SetPos(uint64_t nPos) {
-        nReadPos = nPos;
-        if (nReadPos + nRewind < nSrcPos) {
-            nReadPos = nSrcPos - nRewind;
+        m_read_pos = nPos;
+        if (m_read_pos + nRewind < nSrcPos) {
+            m_read_pos = nSrcPos - nRewind;
             return false;
-        } else if (nReadPos > nSrcPos) {
-            nReadPos = nSrcPos;
+        } else if (m_read_pos > nSrcPos) {
+            m_read_pos = nSrcPos;
             return false;
         } else {
             return true;
@@ -690,14 +690,14 @@ public:
             return false;
         nLongPos = ftell(src);
         nSrcPos = nLongPos;
-        nReadPos = nLongPos;
+        m_read_pos = nLongPos;
         return true;
     }
 
     //! prevent reading beyond a certain position
     //! no argument removes the limit
     bool SetLimit(uint64_t nPos = std::numeric_limits<uint64_t>::max()) {
-        if (nPos < nReadPos)
+        if (nPos < m_read_pos)
             return false;
         nReadLimit = nPos;
         return true;
@@ -713,11 +713,11 @@ public:
     //! search for a given byte in the stream, and remain positioned on it
     void FindByte(char ch) {
         while (true) {
-            if (nReadPos == nSrcPos)
+            if (m_read_pos == nSrcPos)
                 Fill();
-            if (vchBuf[nReadPos % vchBuf.size()] == ch)
+            if (vchBuf[m_read_pos % vchBuf.size()] == ch)
                 break;
-            nReadPos++;
+            m_read_pos++;
         }
     }
 };
