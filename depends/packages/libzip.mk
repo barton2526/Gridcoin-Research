@@ -1,8 +1,8 @@
 package=libzip
-$(package)_version=1.3.2
+$(package)_version=1.9.2
 $(package)_download_path=https://libzip.org/download/
 $(package)_file_name=$(package)-$($(package)_version).tar.gz
-$(package)_sha256_hash=ab4c34eb6c3a08b678cd0f2450a6c57a13e9618b1ba34ee45d00eb5327316457
+$(package)_sha256_hash=fd6a7f745de3d69cf5603edc9cb33d2890f0198e415255d0987a0cf10d824c6f
 $(package)_dependencies=zlib bzip2
 $(package)_patches=nonrandomopentest.c.patch compat.h.patch
 
